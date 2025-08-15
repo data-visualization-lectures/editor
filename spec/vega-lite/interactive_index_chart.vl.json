@@ -1,5 +1,5 @@
 {
-  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
   "data": {
     "url": "data/stocks.csv",
     "format": {"parse": {"date": "date"}}
@@ -14,7 +14,7 @@
         "select": {
           "type": "point",
           "encodings": ["x"],
-          "on": "mouseover",
+          "on": "pointerover",
           "nearest": true
         }
       }],

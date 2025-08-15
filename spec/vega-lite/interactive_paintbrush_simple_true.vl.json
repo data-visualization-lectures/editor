@@ -1,5 +1,5 @@
 {
-  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
   "data": {"url": "data/cars.json"},
   "params": [
     {
@@ -8,7 +8,7 @@
     },
     {
       "name": "paintbrush",
-      "select": {"type": "point", "on": "mouseover"}
+      "select": {"type": "point", "on": "pointerover"}
     }
   ],
   "mark": "point",

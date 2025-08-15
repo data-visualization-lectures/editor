@@ -1,5 +1,5 @@
 {
-  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
   "description": "Multi-series line chart with labels and interactive highlight on hover.  We also set the selection's initial value to provide a better screenshot",
   "data": {"url": "data/stocks.csv"},
   "transform": [{"filter": "datum.symbol!=='IBM'"}],
@@ -31,7 +31,7 @@
       "select": {
         "type": "point",
         "fields": ["symbol"],
-        "on": "mouseover"
+        "on": "pointerover"
       }
     }],
     "mark": {"type": "line", "strokeWidth": 8, "stroke": "transparent"}
