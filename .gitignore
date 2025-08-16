@@ -2,7 +2,6 @@ _site
 .DS_Store
 .idea
 coverage
-dist
 node_modules
 npm-debug.log*
 public/data/
