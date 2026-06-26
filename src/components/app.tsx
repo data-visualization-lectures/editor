@@ -2,7 +2,7 @@ import stringify from 'json-stringify-pretty-compact';
 import * as React from 'react';
 import * as vega from 'vega';
 import * as vegaLite from 'vega-lite';
-import {useCallback, useEffect} from 'react';
+import {useCallback, useEffect, useRef} from 'react';
 import {useParams, useNavigate} from 'react-router';
 import {MessageData} from 'vega-embed';
 import {mergeConfig} from 'vega';
@@ -11,6 +11,7 @@ import {satisfies} from 'semver';
 import schemaParser from 'vega-schema-url-parser';
 import {LAYOUT, Mode} from '../constants';
 import {NAME_TO_MODE, VEGA_LITE_START_SPEC, VEGA_START_SPEC, NAMES} from '../constants/consts';
+import {useT} from '../i18n';
 import {useAppContext} from '../context/app-context';
 import {LocalLogger} from '../utils/logger';
 import {parseJSONCOrThrow, parseJSONC} from '../utils/jsonc-parser';
@@ -33,13 +34,80 @@ const App: React.FC<Props> = (props) => {
   const {state, setState} = appContext;
   const {editorRef, settings} = state;
 
+  // 保存ボタンaction用: useEffectのクロージャのstale問題を回避するref
+  const saveParamsRef = useRef({
+    editorString: state.editorString,
+    view: state.view,
+    projectId: state.projectId,
+    projectTitle: state.projectTitle,
+  });
+
   const params = useParams();
   const navigate = useNavigate();
+  const t = useT();
+
+  const showProcessingToast = useCallback((message: string) => {
+    const header = document.querySelector('dataviz-tool-header');
+    if (header && typeof (header as any).showMessage === 'function') {
+      (header as any).showMessage(message, 'info', 5000);
+    }
+  }, []);
+
+  const setHeaderProjectContext = useCallback((context: Record<string, unknown> | null) => {
+    const header = document.querySelector('dataviz-tool-header') as any;
+    if (!header) return;
+    if (context && typeof header.setProjectContext === 'function') {
+      header.setProjectContext(context);
+    } else if (!context && typeof header.clearProjectContext === 'function') {
+      header.clearProjectContext();
+    }
+  }, []);
+
+  const installHeaderProcessingToasts = useCallback(
+    (header: any) => {
+      if (!header || header.__dvzNativeProjectProcessingToasts === '1' || header.__dvzProcessingToastsInstalled === '1')
+        return;
+
+      if (typeof header.showLoadModal === 'function') {
+        const originalShowLoadModal = header.showLoadModal.bind(header);
+        header.showLoadModal = (...args: any[]) => {
+          showProcessingToast(t('processing.projectList'));
+          return originalShowLoadModal(...args);
+        };
+      }
+
+      if (typeof header.loadProject === 'function') {
+        const originalLoadProject = header.loadProject.bind(header);
+        header.loadProject = (...args: any[]) => {
+          showProcessingToast(t('processing.projectLoad'));
+          return originalLoadProject(...args);
+        };
+      }
+
+      if (typeof header.saveProject === 'function') {
+        const originalSaveProject = header.saveProject.bind(header);
+        header.saveProject = (...args: any[]) => {
+          showProcessingToast(t('processing.projectSave'));
+          return originalSaveProject(...args);
+        };
+      }
+
+      header.__dvzProcessingToastsInstalled = '1';
+    },
+    [showProcessingToast, t],
+  );
 
   const setExample = useCallback(
     async (parameter: {example_name: string; mode: string}) => {
       const name = parameter.example_name;
       editorRef?.focus();
+      showProcessingToast(t('processing.sample'));
+      setHeaderProjectContext({
+        sourceType: 'sample',
+        sourceName: name,
+        sourceNameEn: name,
+        canOverwrite: false,
+      });
 
       switch (parameter.mode) {
         case 'vega': {
@@ -52,6 +120,8 @@ const App: React.FC<Props> = (props) => {
             selectedExample: name,
             parse: true,
             error: null,
+            projectId: null,
+            projectTitle: '',
           }));
           break;
         }
@@ -65,33 +135,41 @@ const App: React.FC<Props> = (props) => {
             selectedExample: name,
             parse: true,
             error: null,
+            projectId: null,
+            projectTitle: '',
           }));
           break;
         }
       }
     },
-    [setState, editorRef],
+    [setState, editorRef, showProcessingToast, setHeaderProjectContext, t],
   );
 
   const setEmptySpec = useCallback(
     (mode: Mode) => {
       if (mode === Mode.Vega) {
+        setHeaderProjectContext(null);
         setState((s) => ({
           ...s,
           editorString: VEGA_START_SPEC,
           mode: Mode.Vega,
           parse: true,
+          projectId: null,
+          projectTitle: '',
         }));
       } else if (mode === Mode.VegaLite) {
+        setHeaderProjectContext(null);
         setState((s) => ({
           ...s,
           editorString: VEGA_LITE_START_SPEC,
           mode: Mode.VegaLite,
           parse: true,
+          projectId: null,
+          projectTitle: '',
         }));
       }
     },
-    [setState],
+    [setState, setHeaderProjectContext],
   );
 
   const setGist = useCallback(
@@ -145,6 +223,12 @@ const App: React.FC<Props> = (props) => {
         }
 
         const contentObj = parseJSONC(content);
+        setHeaderProjectContext({
+          sourceType: 'external-url',
+          sourceName: parameter.filename,
+          sourceNameEn: parameter.filename,
+          canOverwrite: false,
+        });
 
         let detectedMode = Mode.VegaLite;
         if ('$schema' in contentObj && typeof contentObj.$schema === 'string') {
@@ -161,12 +245,14 @@ const App: React.FC<Props> = (props) => {
           mode: detectedMode,
           parse: true,
           error: null,
+          projectId: null,
+          projectTitle: '',
         }));
       } catch (error) {
         console.error('Error loading gist:', error);
       }
     },
-    [setState],
+    [setState, setHeaderProjectContext],
   );
 
   const setSpecInUrl = useCallback(
@@ -202,7 +288,13 @@ const App: React.FC<Props> = (props) => {
         (evt as any).source.postMessage(true, '*');
       }
       if (data.spec) {
-        setState((s) => ({...s, editorString: data.spec}));
+        setHeaderProjectContext({
+          sourceType: 'external-url',
+          sourceName: evt.origin,
+          sourceNameEn: evt.origin,
+          canOverwrite: false,
+        });
+        setState((s) => ({...s, editorString: data.spec, projectId: null, projectTitle: ''}));
       }
       if (data.renderer) {
         setState((s) => ({...s, renderer: data.renderer}));
@@ -222,7 +314,7 @@ const App: React.FC<Props> = (props) => {
     return () => {
       window.removeEventListener('message', handleMessage, false);
     };
-  }, [params, setState, setSpecInUrl]);
+  }, [params, setHeaderProjectContext, setState, setSpecInUrl]);
 
   // Parse Logic
   useEffect(() => {
@@ -414,10 +506,31 @@ const App: React.FC<Props> = (props) => {
     }
   }, [state.lastPosition]);
 
+  // saveParamsRef を常に最新 state に同期する
   useEffect(() => {
+    saveParamsRef.current = {
+      editorString: state.editorString,
+      view: state.view,
+      projectId: state.projectId,
+      projectTitle: state.projectTitle,
+    };
+  }, [state.editorString, state.view, state.projectId, state.projectTitle]);
+
+  useEffect(() => {
+    const clickByAction = (action: string) => {
+      const btn = document.querySelector(`[data-action="${action}"]`) as HTMLElement | null;
+      if (btn) {
+        btn.click();
+      } else {
+        console.warn(`[App] Button with data-action="${action}" not found.`);
+      }
+    };
+
     const configureHeader = () => {
       const header = document.querySelector('dataviz-tool-header');
       if (header) {
+        installHeaderProcessingToasts(header);
+
         const logoUrl = window.location.origin + '/images/logo.png';
         if (typeof (header as any).setConfig === 'function') {
           (header as any).setConfig({
@@ -429,46 +542,38 @@ const App: React.FC<Props> = (props) => {
             buttons: [
               {
                 id: 'load-project-btn',
-                label: 'プロジェクトの読込',
+                label: t('app.loadProject'),
                 action: () => {
-                  console.log('[App] Load Project button clicked. Simulating click on existing button...');
-                  // Find the existing "読込" button. It's usually inside a span that handles the click.
-                  // We look for a header-button containing the text "読込"
-                  const headerButtons = Array.from(document.querySelectorAll('.header-button'));
-                  const loadButton = headerButtons.find((btn) => btn.textContent?.includes('読込'));
-
-                  if (loadButton) {
-                    // The click listener is often on the parent span for PortalWithState
-                    const parent = loadButton.parentElement;
-                    if (parent) {
-                      (parent as HTMLElement).click();
-                    } else {
-                      (loadButton as HTMLElement).click();
-                    }
-                  } else {
-                    console.warn('[App] Existing "読込" button not found.');
-                  }
+                  (header as any).showLoadModal();
                 },
                 align: 'right',
               },
               {
                 id: 'save-project-btn',
-                label: 'プロジェクトの保存',
-                action: () => {
-                  console.log('[App] Save Project button clicked. Simulating click on existing button...');
-                  const headerButtons = Array.from(document.querySelectorAll('.header-button'));
-                  const saveButton = headerButtons.find((btn) => btn.textContent?.includes('保存'));
-
-                  if (saveButton) {
-                    const parent = saveButton.parentElement;
-                    if (parent) {
-                      (parent as HTMLElement).click();
-                    } else {
-                      (saveButton as HTMLElement).click();
-                    }
-                  } else {
-                    console.warn('[App] Existing "保存" button not found.');
+                label: t('app.saveProject'),
+                action: async () => {
+                  const {editorString, view, projectId, projectTitle} = saveParamsRef.current;
+                  let data: any;
+                  try {
+                    data = JSON.parse(editorString);
+                  } catch (e) {
+                    return;
                   }
+                  showProcessingToast(t('processing.savePrep'));
+                  let thumbnailDataUri: string | undefined;
+                  if (view) {
+                    try {
+                      thumbnailDataUri = await (view as any).toImageURL('png');
+                    } catch {
+                      thumbnailDataUri = undefined;
+                    }
+                  }
+                  (header as any).showSaveModal({
+                    name: projectTitle || '',
+                    data,
+                    thumbnailDataUri,
+                    existingProjectId: projectId ?? null,
+                  });
                 },
                 align: 'right',
               },
@@ -480,115 +585,81 @@ const App: React.FC<Props> = (props) => {
                   {
                     label: 'Vega',
                     action: () => {
-                      console.log('[App] Switching to Vega...');
                       navigate('/custom/vega');
                     },
                   },
                   {
                     label: 'Vega-Lite',
                     action: () => {
-                      console.log('[App] Switching to Vega-Lite...');
                       navigate('/custom/vega-lite');
                     },
                   },
                 ],
-
-                align: 'left', // Based on screenshot implication, usually switchers are left/center
+                align: 'left',
               },
               {
                 id: 'export-btn',
-                label: 'エクスポート',
-                action: () => {
-                  console.log('[App] Export button clicked. Simulating click on existing button...');
-                  const headerButtons = Array.from(document.querySelectorAll('.header-button'));
-                  const exportButton = headerButtons.find((btn) => btn.textContent?.includes('エクスポート'));
-
-                  if (exportButton) {
-                    const parent = exportButton.parentElement;
-                    if (parent) {
-                      (parent as HTMLElement).click();
-                    } else {
-                      (exportButton as HTMLElement).click();
-                    }
-                  } else {
-                    console.warn('[App] Existing "エクスポート" button not found.');
-                  }
-                },
+                label: t('app.export'),
+                action: () => clickByAction('export'),
                 align: 'right',
               },
               {
                 id: 'share-btn',
-                label: '共有',
-                action: () => {
-                  console.log('[App] Share button clicked. Simulating click on existing button...');
-                  const headerButtons = Array.from(document.querySelectorAll('.header-button'));
-                  const shareButton = headerButtons.find((btn) => btn.textContent?.includes('共有'));
-
-                  if (shareButton) {
-                    const parent = shareButton.parentElement;
-                    if (parent) {
-                      (parent as HTMLElement).click();
-                    } else {
-                      (shareButton as HTMLElement).click();
-                    }
-                  } else {
-                    console.warn('[App] Existing "共有" button not found.');
-                  }
-                },
+                label: t('app.share'),
+                action: () => clickByAction('share'),
                 align: 'right',
               },
               {
                 id: 'sample-project-btn',
-                label: 'サンプルプロジェクトの読込',
-                action: () => {
-                  console.log('[App] Sample Project button clicked. Simulating click on existing button...');
-                  const headerButtons = Array.from(document.querySelectorAll('.header-button'));
-                  const sampleButton = headerButtons.find((btn) => btn.textContent?.includes('サンプル'));
-
-                  if (sampleButton) {
-                    const parent = sampleButton.parentElement;
-                    if (parent) {
-                      (parent as HTMLElement).click();
-                    } else {
-                      (sampleButton as HTMLElement).click();
-                    }
-                  } else {
-                    console.warn('[App] Existing "サンプル" button not found.');
-                  }
-                },
+                label: t('app.sampleProjects'),
+                action: () => clickByAction('samples'),
                 align: 'left',
               },
               {
                 id: 'help-btn',
-                label: 'ヘルプ',
-                action: () => {
-                  console.log('[App] Help button clicked. Simulating click on existing button...');
-                  const helpButton = document.querySelector('.header-button.help');
-
-                  if (helpButton) {
-                    (helpButton as HTMLElement).click();
-                  } else {
-                    console.warn('[App] Existing "Help" button not found.');
-                  }
-                },
+                label: t('app.help'),
+                action: () => clickByAction('help'),
                 align: 'right',
               },
               {
                 id: 'settings-btn',
-                label: '設定',
-                action: () => {
-                  console.log('[App] Settings button clicked. Simulating click on existing button...');
-                  const settingsButton = document.querySelector('.header-button.settings-button');
-
-                  if (settingsButton) {
-                    (settingsButton as HTMLElement).click();
-                  } else {
-                    console.warn('[App] Existing "Settings" button not found.');
-                  }
-                },
+                label: t('app.settings'),
+                action: () => clickByAction('settings'),
                 align: 'right',
               },
             ],
+          });
+        }
+
+        // --- 新API: setProjectConfig ---
+        if (typeof (header as any).setProjectConfig === 'function') {
+          (header as any).setProjectConfig({
+            appName: 'vega-editor',
+            toolName: 'Vega Editor',
+            toolNameEn: 'Vega Editor',
+            onProjectLoad: (projectData: any, meta: any = {}) => {
+              const str = stringify(projectData);
+              let mode = Mode.VegaLite;
+              if (projectData['$schema']) {
+                if (projectData['$schema'].includes('vega-lite')) mode = Mode.VegaLite;
+                else if (projectData['$schema'].includes('vega')) mode = Mode.Vega;
+              }
+              setState((s) => ({
+                ...s,
+                editorString: str,
+                mode,
+                parse: true,
+                projectId: meta.canOverwrite ? meta.projectId : null,
+                projectTitle: meta.projectName || '',
+              }));
+            },
+            onProjectSave: (meta: any) => {
+              setState((s) => ({
+                ...s,
+                projectId: meta.id,
+                projectTitle: meta.name,
+              }));
+            },
           });
         }
       }
@@ -598,7 +669,7 @@ const App: React.FC<Props> = (props) => {
     } else {
       customElements.whenDefined('dataviz-tool-header').then(configureHeader);
     }
-  }, [state.mode]);
+  }, [state.mode, t, navigate, installHeaderProcessingToasts, showProcessingToast]);
 
   return (
     <div className="app-container" style={{marginTop: '96px', height: 'calc(100vh - 96px)'}}>
